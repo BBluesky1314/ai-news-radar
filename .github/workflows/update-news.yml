@@ -72,7 +72,9 @@ jobs:
 
       - name: Notify Lark
         env:
-          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_CHAT_ID: ${{ secrets.LARK_CHAT_ID }}
         run: python scripts/notify_lark.py --data-dir data --max-items 10
 
       - name: Commit and push changes

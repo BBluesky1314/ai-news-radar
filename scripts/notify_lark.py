@@ -1,11 +1,13 @@
 """
-Post new AI news items to a Lark group bot via incoming webhook.
+Post new AI news items to a Lark/Feishu group via Bot API.
 
 Usage:
   python scripts/notify_lark.py --data-dir data [--max-items 10]
 
 Required env:
-  LARK_WEBHOOK_URL - the Lark incoming webhook URL
+  LARK_APP_ID      - Lark app ID
+  LARK_APP_SECRET  - Lark app secret
+  LARK_CHAT_ID     - target chat ID (oc_xxx)
 """
 
 import argparse
@@ -17,7 +19,7 @@ from datetime import datetime, timezone
 import requests
 
 SENT_IDS_FILE = "lark_sent_ids.json"
-MAX_CARD_MD_CHARS = 8000
+LARK_API_BASE = "https://open.feishu.cn/open-apis"
 
 
 def load_json(path: str):
@@ -33,10 +35,22 @@ def save_json(path: str, data):
 def format_time(ts: str) -> str:
     try:
         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        local_dt = dt.astimezone()
-        return local_dt.strftime("%H:%M")
+        return dt.astimezone().strftime("%H:%M")
     except Exception:
         return ts
+
+
+def get_tenant_token(app_id: str, app_secret: str) -> str:
+    resp = requests.post(
+        f"{LARK_API_BASE}/auth/v3/tenant_access_token/internal",
+        json={"app_id": app_id, "app_secret": app_secret},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    if body.get("code") != 0:
+        raise RuntimeError(f"Failed to get tenant token: {body}")
+    return body["tenant_access_token"]
 
 
 def build_md(news, max_items: int) -> str:
@@ -67,39 +81,44 @@ def build_md(news, max_items: int) -> str:
     return "\n\n".join(lines)
 
 
-def send_card(webhook_url: str, md_content: str, item_count: int, generated_at: str):
-    payload = {
-        "msg_type": "interactive",
-        "card": {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"tag": "plain_text", "content": "AI 新闻雷达"},
-                "template": "blue",
-            },
+def send_card(token: str, chat_id: str, md_content: str, item_count: int, generated_at: str):
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "AI 新闻雷达"},
+            "template": "blue",
+        },
+        "elements": [
+            {"tag": "markdown", "content": md_content}
+        ],
+        "note": {
             "elements": [
                 {
-                    "tag": "markdown",
-                    "content": md_content,
+                    "tag": "plain_text",
+                    "content": f"共 {item_count} 条 · 更新于 {generated_at}",
                 }
-            ],
-            "note": {
-                "elements": [
-                    {
-                        "tag": "plain_text",
-                        "content": f"共 {item_count} 条 · 更新于 {generated_at}",
-                    }
-                ]
-            },
+            ]
         },
     }
-
-    resp = requests.post(webhook_url, json=payload, timeout=30)
+    payload = {
+        "receive_id": chat_id,
+        "msg_type": "interactive",
+        "content": json.dumps(card),
+    }
+    resp = requests.post(
+        f"{LARK_API_BASE}/im/v1/messages",
+        params={"receive_id_type": "chat_id"},
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload,
+        timeout=30,
+    )
     resp.raise_for_status()
     body = resp.json()
     if body.get("code") != 0:
         print(f"Lark API error: {body}", file=sys.stderr)
         sys.exit(1)
-    print(f"Sent {item_count} items to Lark, StatusMessageId={body.get('StatusMessageId', 'N/A')}")
+    msg_id = body.get("data", {}).get("message_id", "N/A")
+    print(f"Sent {item_count} items to chat {chat_id}, message_id={msg_id}")
 
 
 def main():
@@ -108,9 +127,15 @@ def main():
     parser.add_argument("--max-items", type=int, default=10)
     args = parser.parse_args()
 
-    webhook_url = os.environ.get("LARK_WEBHOOK_URL", "").strip()
-    if not webhook_url:
-        print("LARK_WEBHOOK_URL is not set, skipping notification")
+    app_id = os.environ.get("LARK_APP_ID", "").strip()
+    app_secret = os.environ.get("LARK_APP_SECRET", "").strip()
+    chat_id = os.environ.get("LARK_CHAT_ID", "").strip()
+
+    if not app_id or not app_secret:
+        print("LARK_APP_ID or LARK_APP_SECRET not set, skipping notification")
+        return
+    if not chat_id:
+        print("LARK_CHAT_ID not set, skipping notification")
         return
 
     latest_path = os.path.join(args.data_dir, "latest-24h.json")
@@ -139,9 +164,10 @@ def main():
         print("No new AI items to send")
         return
 
+    token = get_tenant_token(app_id, app_secret)
     item_count = len(new_items)
     md = build_md(new_items, args.max_items)
-    send_card(webhook_url, md, item_count, generated_at)
+    send_card(token, chat_id, md, item_count, generated_at)
 
     new_ids = {it["id"] for it in new_items}
     sent_ids.update(new_ids)
