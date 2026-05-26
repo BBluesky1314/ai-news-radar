@@ -70,6 +70,11 @@ jobs:
             python scripts/update_news.py --output-dir data --window-hours 24 --archive-days 21
           fi
 
+      - name: Notify Lark
+        env:
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+        run: python scripts/notify_lark.py --data-dir data --max-items 10
+
       - name: Commit and push changes
         env:
           EMAIL_DIGEST_PUBLISH: ${{ secrets.EMAIL_DIGEST_PUBLISH || vars.EMAIL_DIGEST_PUBLISH }}
@@ -77,6 +82,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/latest-24h.json data/latest-24h-all.json data/archive.json data/source-status.json data/waytoagi-7d.json data/title-zh-cache.json
+          if [ -f data/lark_sent_ids.json ]; then git add data/lark_sent_ids.json; fi
           if [ -f data/email-digest.json ] && [ "$EMAIL_DIGEST_PUBLISH" = "1" ]; then
             git add data/email-digest.json
           fi
